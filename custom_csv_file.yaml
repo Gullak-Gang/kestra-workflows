@@ -1,0 +1,116 @@
+id: custom_csv
+namespace: hackfrost
+
+inputs:
+  - id: custom_csv
+    type: FILE
+    required: true
+    description: "Custom CSV file representing the following format: "
+
+  - id: user_id
+    type: STRING
+    required: true
+
+tasks:
+  - id: csv_to_ion
+    type: io.kestra.plugin.serdes.csv.CsvToIon
+    from: "{{ inputs.custom_csv }}"
+
+  - id: ion_to_json
+    type: io.kestra.plugin.serdes.json.IonToJson
+    from: "{{ outputs.csv_to_ion.uri }}"
+
+  - id: sanitize_json
+    type: io.kestra.plugin.scripts.python.Script
+    outputFiles:
+      - sanitized.json
+    script: |
+      import json
+
+      # Read the file
+      with open("{{ outputs.ion_to_json.uri }}", "r") as file:
+        data = file.readlines()
+
+      posts = [json.loads(line)["posts"] for line in data]
+
+      with open("sanitized.json", "a") as file:
+        json.dump(posts, file)
+
+  - id: sentiment_analysis
+    type: io.kestra.plugin.sentiment_analysis.SentimentAnalysis
+    api_key: "{{ kv('groq_api_key') }}"
+    posts: "{{outputs.sanitize_json.outputFiles['sanitized.json']}}"
+  
+  - id: append_platform_details
+    type: io.kestra.plugin.scripts.python.Script
+    outputFiles:
+      - complete.json
+    script: |
+      import json
+
+      def add_fields_to_json_array(input_file, output_file, user_id, platform):
+          """
+          Modifies each entry in a JSON array to add user_id and platform fields
+          and writes the modified array to a new JSON file.
+
+          Args:
+              input_file (str): Path to the input JSON file containing a JSON array.
+              output_file (str): Path to the output JSON file.
+              user_id (str): The user ID to add to each entry.
+              platform (str): The platform to add to each entry.
+          """
+          with open(input_file, 'r') as infile:
+              data = json.load(infile)  # Load the JSON array
+              
+              # Validate that the input is a list
+              if not isinstance(data, list):
+                  raise ValueError("Input JSON file must contain a JSON array.")
+
+              # Add fields to each entry in the array
+              for entry in data:
+                  entry['user_id'] = user_id
+                  entry['platform'] = platform
+          
+          # Write the modified array to the output file
+          with open(output_file, 'a') as outfile:
+              json.dump(data, outfile, indent=4)
+
+      if __name__ == "__main__":
+          # Specify the input and output file paths
+          input_file = "{{ outputs.sentiment_analysis.uri }}"    # Replace with the path to your input JSON file
+          output_file = "complete.json"  # Replace with the desired output JSON file path
+          user_id = "{{ inputs.user_id }}"            # Specify the user_id to be added
+          platform = "custom"             # Specify the platform to be added
+          
+          # Call the function to process the file
+          add_fields_to_json_array(input_file, output_file, user_id, platform)
+
+          print(f"Modified file written to: {output_file}")
+
+  - id: json_to_ion
+    type: io.kestra.plugin.serdes.json.JsonToIon
+    from: "{{ outputs.append_platform_details.outputFiles['complete.json'] }}"
+    newLine: false # regular json
+
+  - id: to_csv
+    type: io.kestra.plugin.serdes.csv.IonToCsv
+    from: "{{ outputs.json_to_ion.uri }}"
+    
+  - id: copy_in
+    type: io.kestra.plugin.jdbc.postgresql.CopyIn
+    url: {{ kv('postgres_url') }}
+    username: {{ kv('postgres_username') }}
+    password: {{ kv('postgres_password') }}
+    format: CSV
+    ssl: true
+    table: "analysis_result_new"
+    columns: 
+      - sentiment
+      - score
+      - positive_word_count
+      - negative_word_count
+      - user_id
+      - platform
+    from: "{{ outputs.to_csv.uri }}"
+    header: true
+    delimiter: ","
