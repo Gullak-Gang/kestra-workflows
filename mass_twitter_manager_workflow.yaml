@@ -1,0 +1,49 @@
+# This flow will run daily to fetch available connected users and then create a subflow for all of them to generate a sentiment analysis report
+id: mass_twitter_flow_dispatcher
+namespace: hackfrost
+
+tasks:
+  - id: copy_out
+    type: io.kestra.plugin.jdbc.postgresql.CopyOut
+    url: {{ kv('postgres_url') }}
+    username: {{ kv('postgres_username') }}
+    password: {{ kv('postgres_password') }}
+    format: CSV
+    sql: SELECT * from twitter_user_connections where disconnected_at is null and hashtag is not null and number_of_posts is not null
+    ssl: true
+    header: true
+    delimiter: ","
+
+  - id: csv_to_ion
+    type: io.kestra.plugin.serdes.csv.CsvToIon
+    from: "{{ outputs.copy_out.uri }}"
+
+  - id: ion_to_jsonl
+    type: io.kestra.plugin.serdes.json.IonToJson
+    from: "{{ outputs.csv_to_ion.uri }}"
+    newLine: true # JSON-L
+
+  - id: for_each_item
+    type: io.kestra.plugin.core.flow.ForEachItem
+    items: "{{ outputs.ion_to_jsonl.uri }}"
+    batch:
+      rows: 1
+    namespace: hackfrost
+    flowId: twitter_flow
+    wait: true
+    transmitFailed: true
+    inputs:
+      twitter_access_token: "{{ json(read(taskrun.items)).access_token }}"
+      twitter_refresh_token: "{{ json(read(taskrun.items)).refresh_token }}"
+      twitter_token_expires_at: "{{ json(read(taskrun.items)).expires_at }}"
+      hashtag: "{{ json(read(taskrun.items)).hashtag }}"
+      number_of_posts: "{{ json(read(taskrun.items)).number_of_posts }}"
+      user_id: "{{ json(read(taskrun.items)).user_id }}"
+
+triggers:
+  - id: daily
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "@daily"
+    conditions:
+      - type: io.kestra.plugin.core.condition.ExpressionCondition
+        expression: "{{ kv('twitter_client_id') is defined }}"

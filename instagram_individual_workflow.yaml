@@ -1,47 +1,36 @@
-# This flow  perform Sentiment Analysis on a csv contaning posts and then push the results to a DB
-id: custom_csv
+# This flow will fetch posts from instagram and then perform Sentiment Analysis on them and then push the results to a DB
+id: intagram_flow
 namespace: hackfrost
 
 inputs:
-  - id: custom_csv
-    type: FILE
-    required: true
-    description: "Custom CSV file representing the following format: "
-
-  - id: user_id
+  - id: apify_token
     type: STRING
     required: true
 
+  - id: hashtag
+    type: STRING
+    required: true
+
+  - id: numberOfPosts
+    type: STRING
+    required: true
+    
+  - id: user_id
+    required: true
+    type: STRING
+
 tasks:
-  - id: csv_to_ion
-    type: io.kestra.plugin.serdes.csv.CsvToIon
-    from: "{{ inputs.custom_csv }}"
+  - id: fetch_posts
+    type: io.kestra.plugin.instagram.GetPosts
+    token: "{{ inputs.apify_token }}"
+    hashtag: "{{ inputs.hashtag }}"
+    numberOfPosts: "{{ inputs.numberOfPosts }}"
 
-  - id: ion_to_json
-    type: io.kestra.plugin.serdes.json.IonToJson
-    from: "{{ outputs.csv_to_ion.uri }}"
-
-  - id: sanitize_json
-    type: io.kestra.plugin.scripts.python.Script
-    outputFiles:
-      - sanitized.json
-    script: |
-      import json
-
-      # Read the file
-      with open("{{ outputs.ion_to_json.uri }}", "r") as file:
-        data = file.readlines()
-
-      posts = [json.loads(line)["posts"] for line in data]
-
-      with open("sanitized.json", "a") as file:
-        json.dump(posts, file)
-
-  - id: sentiment_analysis
+  - id: analysis
     type: io.kestra.plugin.sentiment_analysis.SentimentAnalysis
-    api_key: "{{ kv('groq_api_key') }}"
-    posts: "{{outputs.sanitize_json.outputFiles['sanitized.json']}}"
-  
+    api_key: "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"
+    posts: "{{ outputs.fetch_posts.uri }}"
+
   - id: append_platform_details
     type: io.kestra.plugin.scripts.python.Script
     outputFiles:
@@ -78,15 +67,16 @@ tasks:
 
       if __name__ == "__main__":
           # Specify the input and output file paths
-          input_file = "{{ outputs.sentiment_analysis.uri }}"    # Replace with the path to your input JSON file
+          input_file = "{{ outputs.analysis.uri }}"    # Replace with the path to your input JSON file
           output_file = "complete.json"  # Replace with the desired output JSON file path
           user_id = "{{ inputs.user_id }}"            # Specify the user_id to be added
-          platform = "custom"             # Specify the platform to be added
+          platform = "instagram"             # Specify the platform to be added
           
           # Call the function to process the file
           add_fields_to_json_array(input_file, output_file, user_id, platform)
 
           print(f"Modified file written to: {output_file}")
+
 
   - id: json_to_ion
     type: io.kestra.plugin.serdes.json.JsonToIon
@@ -99,9 +89,9 @@ tasks:
     
   - id: copy_in
     type: io.kestra.plugin.jdbc.postgresql.CopyIn
-    url: {{ kv('postgres_url') }}
-    username: {{ kv('postgres_username') }}
-    password: {{ kv('postgres_password') }}
+    url: jdbc:postgresql://ep-snowy-bush-35066957.ap-southeast-1.aws.neon.tech/hackfrost?sslmode=require
+    username: Tanish2002
+    password: kcB64pAdvEoz
     format: CSV
     ssl: true
     table: "analysis_result_new"
